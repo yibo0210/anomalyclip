@@ -18,20 +18,6 @@ def generate_class_info(dataset_name):
         obj_list = ['bracket_black', 'bracket_brown', 'bracket_white', 'connector', 'metal_plate', 'tubes']
     elif dataset_name == 'btad':
         obj_list = ['01', '02', '03']
-    elif dataset_name == 'DAGM_KaggleUpload':
-        obj_list = ['Class1','Class2','Class3','Class4','Class5','Class6','Class7','Class8','Class9','Class10']
-    elif dataset_name == 'SDD':
-        obj_list = ['electrical commutators']
-    elif dataset_name == 'DTD':
-        obj_list = ['Woven_001', 'Woven_127', 'Woven_104', 'Stratified_154', 'Blotchy_099', 'Woven_068', 'Woven_125', 'Marbled_078', 'Perforated_037', 'Mesh_114', 'Fibrous_183', 'Matted_069']
-    elif dataset_name == 'colon':
-        obj_list = ['colon']
-    elif dataset_name == 'ISBI':
-        obj_list = ['skin']
-    elif dataset_name == 'Chest':
-        obj_list = ['chest']
-    elif dataset_name == 'thyroid':
-        obj_list = ['thyroid']
     for k, index in zip(obj_list, range(len(obj_list))):
         class_name_map_class_id[k] = index
 

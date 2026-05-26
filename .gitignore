@@ -12,6 +12,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+*.egg-info/
 
 # IDE
 .idea/
@@ -20,7 +21,9 @@ venv/
 # Experiment outputs
 results/
 
+# Claude
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
-.claude/

@@ -1,65 +1,90 @@
-# CLAUDE.md
+# CLAUDE.md - AnomalyCLIP Project
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+## Project Overview
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+This is the official **AnomalyCLIP** implementation (ICLR 2024): Object-agnostic Prompt Learning for Zero-shot Anomaly Detection. The model adapts CLIP for industrial anomaly detection without category-specific training.
 
-## 1. Think Before Coding
+**Backbone**: ViT-B/16 (adapted from original ViT-L/14@336px)
+**GPU**: RTX 3060 Laptop 6GB
+**GitHub**: https://github.com/yibo0210/anomalyclip
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+## Architecture (Four Innovations)
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+| # | Component | File | Mechanism |
+|---|-----------|------|-----------|
+| 1 | **DPAM** | `AnomalyCLIP_lib/AnomalyCLIP.py:Attention` | Replace Q/K with V in deep layer self-attention |
+| 2 | **Object-agnostic Prompt** | `prompt_ensemble.py:ctx_pos/ctx_neg` | Learn "object"/"damaged object" semantics |
+| 3 | **Compound Prompt** | `prompt_ensemble.py:compound_prompts_text` | Layer-wise learnable tokens in text encoder |
+| 4 | **Multi-layer Summation** | `train.py:similarity_map_list` | Per-layer anomaly maps → simple sum |
 
-## 2. Simplicity First
+## Project Structure
 
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+AnomalyCLIP-main/
+├── train.py / test.py           # Training & evaluation entry points
+├── prompt_ensemble.py            # Prompt learner (ctx_pos/neg, compound prompts)
+├── dataset.py                    # Data loader (MVTec, VisA, BTAD, MPDD)
+├── loss.py / metrics.py          # Focal loss, Dice loss, AUROC, AUPRO
+├── utils.py / logger.py          # Utilities
+├── visualization.py              # Heatmap overlay
+│
+├── AnomalyCLIP_lib/              # Core model library
+│   ├── AnomalyCLIP.py            #   AnomalyCLIP model (DPAM + learnable tokens)
+│   ├── CLIP.py                   #   Standard CLIP (ResNet + ViT)
+│   ├── build_model.py            #   Model factory from state_dict
+│   ├── model_load.py             #   Model loading + similarity computation
+│   └── simple_tokenizer.py       #   BPE tokenizer
+│
+├── generate_dataset_json/        # Dataset JSON generators
+│   ├── mvtec.py / visa.py / btad.py / mpdd.py
+│
+├── scripts/                      # Utility scripts
+│   ├── run_demo.py               #   Single image inference demo
+│   └── plot_results.py           #   Experiment result plotting
+│
+├── docs/                         # Documentation
+│   ├── literature_survey.md      #   14-paper survey with feasibility analysis
+│   └── improvement_plan.md       #   Phase 1-4 improvement plan
+│
+├── assets/                       # README images
+├── checkpoints/                  # Saved model weights (gitignored)
+├── data/                         # Datasets (gitignored)
+├── clip_models/                  # CLIP pretrained weights (gitignored)
+└── results/                      # Evaluation outputs (gitignored)
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+## Experiment Branches
 
----
+```
+main ──────────────────────────────────── baseline (original paper code)
+  │
+  ├── exp/multiscale    → Phase 1: Multi-Scale Spatial Aggregation
+  ├── exp/resolution    → Phase 2: Higher input resolution (224→336)
+  └── exp/attn-adapter  → Phase 3: Attention-Focused Adapter
+```
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+## Key Parameters
+
+| Param | ViT-B/16 | ViT-L/14 |
+|-------|----------|----------|
+| `--features_list` | [3, 6, 9, 12] | [6, 12, 18, 24] |
+| `--image_size` | 224 | 518 |
+| `--batch_size` | 16 | 8 |
+| `--model_name` | ViT-B/16 | ViT-L/14@336px |
+
+## Current Baseline (MVTec AD)
+
+| pixel_auroc | pixel_aupro | image_auroc | image_ap |
+|:-----------:|:-----------:|:-----------:|:--------:|
+| 94.1 | 84.0 | 90.4 | 94.8 |
+
+Target: pixel_aupro 84 → 90+ (original ViT-L/14: 93.9)
+
+## Behavioral Guidelines
+
+1. **Branch for each experiment** — never modify main directly
+2. **Run evaluate after each experiment** — record pixel_auroc, pixel_aupro, image_auroc, image_ap
+3. **Compare against baseline** — record delta for each metric
+4. **Commit after each completed experiment** — with results in commit message
+5. **Stop training early** when loss plateaus for 3+ epochs
+6. **Save and record all data** after each experiment
