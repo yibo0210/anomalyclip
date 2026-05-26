@@ -1,0 +1,26 @@
+# Model checkpoints and weights
+checkpoints/
+clip_models/
+*.pth
+*.pt
+
+# Datasets
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Experiment outputs
+results/
+
+# OS
+.DS_Store
+Thumbs.db
+.claude/
