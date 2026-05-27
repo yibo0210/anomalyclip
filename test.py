@@ -16,22 +16,6 @@ from tabulate import tabulate
 from utils import get_transform
 
 
-def multi_scale_aggregation(similarity_map, kernel_sizes=[1, 3, 5]):
-    """Multi-scale spatial aggregation on similarity map.
-    Args:
-        similarity_map: [B, 2, H, W] - channel 0: normal, channel 1: anomaly
-        kernel_sizes: list of pooling kernel sizes
-    Returns:
-        aggregated map: [B, 2, H, W]
-    """
-    B, C, H, W = similarity_map.shape
-    aggregated_list = []
-    for k in kernel_sizes:
-        pad = k // 2
-        pooled = F.avg_pool2d(similarity_map, kernel_size=k, stride=1, padding=pad)
-        aggregated_list.append(pooled)
-    return torch.stack(aggregated_list, dim=0).mean(dim=0)
-
 def setup_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -118,13 +102,9 @@ def test(args):
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
                     similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
-                    # Multi-scale spatial aggregation
-                    sm = similarity_map.permute(0, 3, 1, 2)  # [B, 2, H, W]
-                    sm = multi_scale_aggregation(sm, kernel_sizes=[1, 3, 5])
-                    sm = sm.permute(0, 2, 3, 1)  # [B, H, W, 2]
-                    anomaly_map = (sm[...,1] + 1 - sm[...,0])/2.0
-                    # The following code is equivalent. 
-                    # anomaly_map = similarity_map[...,1] 
+                    anomaly_map = (similarity_map[...,1] + 1 - similarity_map[...,0])/2.0
+                    # The following code is equivalent.
+                    # anomaly_map = similarity_map[...,1]
                     anomaly_map_list.append(anomaly_map)
 
             anomaly_map = torch.stack(anomaly_map_list)

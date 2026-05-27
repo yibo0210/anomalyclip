@@ -14,21 +14,6 @@ import random
 from utils import get_transform
 
 
-def multi_scale_aggregation(similarity_map, kernel_sizes=[1, 3, 5]):
-    """Multi-scale spatial aggregation on similarity map.
-    Args:
-        similarity_map: [B, 2, H, W] - channel 0: normal, channel 1: anomaly
-        kernel_sizes: list of pooling kernel sizes
-    Returns:
-        aggregated map: [B, 2, H, W]
-    """
-    B, C, H, W = similarity_map.shape
-    aggregated_list = []
-    for k in kernel_sizes:
-        pad = k // 2
-        pooled = F.avg_pool2d(similarity_map, kernel_size=k, stride=1, padding=pad)
-        aggregated_list.append(pooled)
-    return torch.stack(aggregated_list, dim=0).mean(dim=0)
 def setup_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -108,8 +93,6 @@ def train(args):
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
                     similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
-                    # Multi-scale spatial aggregation
-                    similarity_map = multi_scale_aggregation(similarity_map, kernel_sizes=[1, 3, 5])
                     similarity_map_list.append(similarity_map)
 
             loss = 0
