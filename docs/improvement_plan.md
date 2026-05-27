@@ -22,6 +22,7 @@
 | 边界优化 | BoundaryLoss + LearnableRefine | 无效 | 训练集无 GT mask |
 | PEFT - Adapter | BottleneckAdapter @ FFN (0.3M) | 无效 | 改 FFN 特征变换不改注意力焦点 |
 | PEFT - LoRA | AttentionLoRA rank=4 (37K) | 无效 | 同上 |
+| 多尺度聚合 | AvgPool 1/3/5 on similarity map | 无效 | 模糊边界，AUPRO +0.1 |
 
 ### 1.3 根因分析
 
@@ -90,24 +91,24 @@ ViT-B/16 相比 ViT-L/14 有三个结构性劣势：
 
 ## 三、实验计划
 
-### Phase 1: Multi-Scale Spatial Aggregation（优先级最高）
+### Phase 1: Multi-Scale Spatial Aggregation（优先级最高）❌ 无效
 
 **目标**: 验证空间聚合能否提升 AUPRO
 
 **实现**:
-1. 在 `prompt_ensemble.py` 的 `fused_anomaly_map()` 中，对每层 patch feature 做多尺度高斯滑窗聚合
-2. 滑窗尺寸: r ∈ {1, 3, 5}，高斯 σ = r/3
-3. 聚合特征与原始特征拼接过 attention adapter（或用简单线性投影降维）
+1. 在 `train.py` / `test.py` 中，对每层 similarity map 做 1×1、3×3、5×5 平均池化后取均值
+2. 零可训练参数，纯特征后处理
 
-**实验设计**:
+**实验结果** (2026-05-27, epoch 10, MVTec AD):
 
-| 实验 | 滑窗尺寸 | 聚合方式 | 预期 AUPRO 变化 |
-|------|:---:|------|:---:|
-| A1 | 1,3,5 | 拼接+线性投影 | +3~5 |
-| A2 | 1,3,5 | 平均池化 | +2~4 |
-| A3 | 1,3,5,7 | 拼接+线性投影 | +3~6 |
+| 指标 | Baseline | Phase 1 | Delta |
+|------|:--------:|:-------:|:-----:|
+| pixel_auroc | 94.1 | 93.5 | -0.6 |
+| pixel_aupro | 84.0 | 84.1 | **+0.1** |
+| image_auroc | 90.4 | 90.1 | -0.3 |
+| image_ap | 94.8 | 94.6 | -0.2 |
 
-**判决标准**: AUPRO 提升 ≥ 3 点即视为有效
+**结论**: 无效。AUPRO 仅 +0.1（远低于 +3 判决标准）。平均池化模糊了 anomaly map 边界，对 ViT 缺乏局部偏置的结构无帮助。
 
 ### Phase 2: 分辨率提升（与 Phase 1 并行或接续）
 

@@ -12,6 +12,23 @@ import numpy as np
 import os
 import random
 from utils import get_transform
+
+
+def multi_scale_aggregation(similarity_map, kernel_sizes=[1, 3, 5]):
+    """Multi-scale spatial aggregation on similarity map.
+    Args:
+        similarity_map: [B, 2, H, W] - channel 0: normal, channel 1: anomaly
+        kernel_sizes: list of pooling kernel sizes
+    Returns:
+        aggregated map: [B, 2, H, W]
+    """
+    B, C, H, W = similarity_map.shape
+    aggregated_list = []
+    for k in kernel_sizes:
+        pad = k // 2
+        pooled = F.avg_pool2d(similarity_map, kernel_size=k, stride=1, padding=pad)
+        aggregated_list.append(pooled)
+    return torch.stack(aggregated_list, dim=0).mean(dim=0)
 def setup_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -50,7 +67,12 @@ def train(args):
     loss_dice = BinaryDiceLoss()
 
     lam = 4
-    
+
+    # Early stopping
+    patience = args.patience
+    best_loss = float('inf')
+    epochs_no_improve = 0
+
     model.eval()
     prompt_learner.train()
     for epoch in tqdm(range(args.epoch)):
@@ -68,31 +90,26 @@ def train(args):
             gt[gt <= 0.5] = 0
 
             with torch.no_grad():
-                # Apply DPAM to the layer from 6 to 24
-                # DPAM_layer represents the number of layer refined by DPAM from top to bottom
-                # DPAM_layer = 1, no DPAM is used
-                # DPAM_layer = 20 as default
                 image_features, patch_features = model.encode_image(image, args.features_list, DPAM_layer = dpam_layer)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
-           ####################################
             prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
             text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
             text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
             text_features = text_features/text_features.norm(dim=-1, keepdim=True)
-            # Apply DPAM surgery
             text_probs = image_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
             text_probs = text_probs[:, 0, ...]/0.07
             image_loss = F.cross_entropy(text_probs, label.long().to(device))
             image_loss_list.append(image_loss.item())
             #########################################################################
             similarity_map_list = []
-            # similarity_map_list.append(similarity_map)
             for idx, patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
                     similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
+                    # Multi-scale spatial aggregation
+                    similarity_map = multi_scale_aggregation(similarity_map, kernel_sizes=[1, 3, 5])
                     similarity_map_list.append(similarity_map)
 
             loss = 0
@@ -106,14 +123,26 @@ def train(args):
             (loss+image_loss).backward()
             optimizer.step()
             loss_list.append(loss.item())
+
+        epoch_loss = np.mean(loss_list)
         # logs
         if (epoch + 1) % args.print_freq == 0:
-            logger.info('epoch [{}/{}], loss:{:.4f}, image_loss:{:.4f}'.format(epoch + 1, args.epoch, np.mean(loss_list), np.mean(image_loss_list)))
+            logger.info('epoch [{}/{}], loss:{:.4f}, image_loss:{:.4f}'.format(epoch + 1, args.epoch, epoch_loss, np.mean(image_loss_list)))
 
         # save model
         if (epoch + 1) % args.save_freq == 0:
             ckp_path = os.path.join(args.save_path, 'epoch_' + str(epoch + 1) + '.pth')
             torch.save({"prompt_learner": prompt_learner.state_dict()}, ckp_path)
+
+        # Early stopping check (relative improvement threshold)
+        if epoch_loss < best_loss * (1 - 1e-3):
+            best_loss = epoch_loss
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                logger.info(f'Early stopping at epoch {epoch + 1} (no improvement for {patience} epochs)')
+                break
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("AnomalyCLIP", add_help=True)
@@ -137,6 +166,7 @@ if __name__ == '__main__':
     parser.add_argument("--print_freq", type=int, default=1, help="print frequency")
     parser.add_argument("--save_freq", type=int, default=1, help="save frequency")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
+    parser.add_argument("--patience", type=int, default=3, help="early stopping patience")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)
