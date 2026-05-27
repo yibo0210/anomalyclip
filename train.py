@@ -45,7 +45,9 @@ def train(args):
     dpam_layer = min(20, num_layers + 1)
     model.visual.DAPM_replace(DPAM_layer = dpam_layer)
     ##########################################################################################
-    optimizer = torch.optim.Adam(list(prompt_learner.parameters()), lr=args.learning_rate, betas=(0.5, 0.999))
+    # Include adapter parameters in optimizer
+    adapter_params = list(model.visual.attn_adapter.parameters())
+    optimizer = torch.optim.Adam(list(prompt_learner.parameters()) + adapter_params, lr=args.learning_rate, betas=(0.5, 0.999))
 
     # losses
     loss_focal = FocalLoss()
@@ -59,9 +61,11 @@ def train(args):
     epochs_no_improve = 0
 
     model.eval()
+    model.visual.attn_adapter.train()
     prompt_learner.train()
     for epoch in tqdm(range(args.epoch)):
         model.eval()
+        model.visual.attn_adapter.train()
         prompt_learner.train()
         loss_list = []
         image_loss_list = []
@@ -115,7 +119,8 @@ def train(args):
         # save model
         if (epoch + 1) % args.save_freq == 0:
             ckp_path = os.path.join(args.save_path, 'epoch_' + str(epoch + 1) + '.pth')
-            torch.save({"prompt_learner": prompt_learner.state_dict()}, ckp_path)
+            torch.save({"prompt_learner": prompt_learner.state_dict(),
+                        "attn_adapter": model.visual.attn_adapter.state_dict()}, ckp_path)
 
         # Early stopping check (relative improvement threshold)
         if epoch_loss < best_loss * (1 - 1e-3):

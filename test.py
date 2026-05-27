@@ -67,6 +67,8 @@ def test(args):
     prompt_learner = AnomalyCLIP_PromptLearner(model.to("cpu"), AnomalyCLIP_parameters)
     checkpoint = torch.load(args.checkpoint_path)
     prompt_learner.load_state_dict(checkpoint["prompt_learner"])
+    if "attn_adapter" in checkpoint:
+        model.visual.attn_adapter.load_state_dict(checkpoint["attn_adapter"])
     prompt_learner.to(device)
     model.to(device)
     num_layers = len(model.visual.transformer.resblocks)

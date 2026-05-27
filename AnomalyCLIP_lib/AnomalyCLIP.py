@@ -322,6 +322,42 @@ class Transformer(nn.Module):
     def get_cast_dtype(self) -> torch.dtype:
         return self.resblocks[0].mlp.c_fc.weight.dtype
 
+
+class AttentionAdapter(nn.Module):
+    """Lightweight self-attention adapter for reweighting patch features."""
+    def __init__(self, dim, num_heads=8, mlp_ratio=0.25):
+        super().__init__()
+        hidden = int(dim * mlp_ratio)
+        self.norm = LayerNorm(dim)
+        self.q_proj = nn.Linear(dim, hidden, bias=False)
+        self.k_proj = nn.Linear(dim, hidden, bias=False)
+        self.v_proj = nn.Linear(dim, hidden, bias=False)
+        self.out_proj = nn.Linear(hidden, dim, bias=False)
+        self.num_heads = num_heads
+        self.scale = (hidden // num_heads) ** -0.5
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, dim),
+        )
+        self.norm2 = LayerNorm(dim)
+
+    def forward(self, x):
+        # x: [N, L, D], L = 1 + num_patches (CLS + patches)
+        N, L, D = x.shape
+        h = self.norm(x)
+        q = self.q_proj(h).reshape(N, L, self.num_heads, -1).permute(0, 2, 1, 3)
+        k = self.k_proj(h).reshape(N, L, self.num_heads, -1).permute(0, 2, 1, 3)
+        v = self.v_proj(h).reshape(N, L, self.num_heads, -1).permute(0, 2, 1, 3)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(N, L, -1)
+        out = self.out_proj(out)
+        x = x + out
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
 class VisionTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int):
         super().__init__()
@@ -342,6 +378,9 @@ class VisionTransformer(nn.Module):
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
+        # Attention Adapter for patch feature reweighting
+        self.attn_adapter = AttentionAdapter(width, num_heads=heads)
+
 
     @torch.no_grad()
     def DAPM_replace(self, DPAM_layer):
@@ -354,42 +393,41 @@ class VisionTransformer(nn.Module):
                 self.attn.proj.bias.data = self.transformer.resblocks[-i].attn.out_proj.bias.clone()
                 self.transformer.resblocks[-i].attn = self.attn
 
-    @torch.no_grad()
     def forward(self, x: torch.Tensor, features_list, ori_patch = False, proj_use = True, DPAM_layer = None, ffn = False):
 
-        x = self.conv1(x)  # shape = [*, width, grid, grid]
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
-        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        side = int((self.positional_embedding.shape[0] - 1) ** 0.5)
-        new_side = int((x.shape[1] - 1) ** 0.5)
+        with torch.no_grad():
+            x = self.conv1(x)  # shape = [*, width, grid, grid]
+            x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+            x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+            x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+            side = int((self.positional_embedding.shape[0] - 1) ** 0.5)
+            new_side = int((x.shape[1] - 1) ** 0.5)
 
-        # update the position embedding during inference for varied input size
-        if side != new_side:
-            new_pos = self.positional_embedding[1:, :].reshape(-1, side, side, x.shape[-1]).permute(0, 3, 1, 2)
-            new_pos = torch.nn.functional.interpolate(new_pos, (new_side, new_side), mode='bilinear')
-            new_pos = new_pos.reshape(-1, x.shape[-1], new_side * new_side).transpose(1, 2)
-            self.positional_embedding.data = torch.cat([self.positional_embedding[:1, :], new_pos[0]], 0)
+            # update the position embedding during inference for varied input size
+            if side != new_side:
+                new_pos = self.positional_embedding[1:, :].reshape(-1, side, side, x.shape[-1]).permute(0, 3, 1, 2)
+                new_pos = torch.nn.functional.interpolate(new_pos, (new_side, new_side), mode='bilinear')
+                new_pos = new_pos.reshape(-1, x.shape[-1], new_side * new_side).transpose(1, 2)
+                self.positional_embedding.data = torch.cat([self.positional_embedding[:1, :], new_pos[0]], 0)
 
-        pos = self.positional_embedding.to(x.dtype)
-        x = x + pos
-        x = self.ln_pre(x)
+            pos = self.positional_embedding.to(x.dtype)
+            x = x + pos
+            x = self.ln_pre(x)
 
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        [x, x_ori], patch_tokens = self.transformer(x, features_list, DPAM_layer = DPAM_layer, ffn = ffn)
-        
+            x = x.permute(1, 0, 2)  # NLD -> LND
+            [x, x_ori], patch_tokens = self.transformer(x, features_list, DPAM_layer = DPAM_layer, ffn = ffn)
 
-        if True:
-            patch_token_list = []
-            for patch_token in patch_tokens:
-                patch_token = self.ln_post(patch_token.permute(1, 0, 2)) @ self.proj  # LND -> NLD
-                patch_token_list.append(patch_token)
-            patch_tokens = patch_token_list
+        # Apply attention adapter (trainable)
+        patch_token_list = []
+        for patch_token in patch_tokens:
+            # patch_token: [L, N, D] -> [N, L, D]
+            pt = patch_token.permute(1, 0, 2)
+            pt = self.attn_adapter(pt)
+            pt = self.ln_post(pt) @ self.proj  # [N, L, output_dim]
+            patch_token_list.append(pt)
+        patch_tokens = patch_token_list
 
-            return x_ori[0, :, :] @ self.proj, patch_tokens
-
-
-        return x
+        return x_ori[0, :, :] @ self.proj, patch_tokens
 
 
 # from thop import profile
