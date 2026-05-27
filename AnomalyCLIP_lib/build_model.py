@@ -46,5 +46,5 @@ def build_model(name: str, state_dict: dict, design_details = None):
             del state_dict[key]
 
     #convert_weights(model)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     return model.eval()

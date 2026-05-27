@@ -23,6 +23,7 @@
 | PEFT - Adapter | BottleneckAdapter @ FFN (0.3M) | 无效 | 改 FFN 特征变换不改注意力焦点 |
 | PEFT - LoRA | AttentionLoRA rank=4 (37K) | 无效 | 同上 |
 | 多尺度聚合 | AvgPool 1/3/5 on similarity map | 无效 | 模糊边界，AUPRO +0.1 |
+| Attention Adapter | Self-attn + MLP on patch tokens | 无效 | 重加权未能增强异常特征 |
 
 ### 1.3 根因分析
 
@@ -129,21 +130,25 @@ ViT-B/16 相比 ViT-L/14 有三个结构性劣势：
 
 **结论**: AUPRO +1.2，部分有效但未达 +3 判决标准。分辨率提升增强空间定位，但对全局判别略有负面影响。
 
-### Phase 3: Attention Adapter（前两个方向验证后）
+### Phase 3: Attention Adapter ❌ 无效
 
 **目标**: 在最优预处理基础上加轻量注意力适配
 
 **实现**:
-1. 每层添加 `Q/K/V` 投影矩阵（维度 d×d̃，d̃=64）
-2. 输出投影 `W_O`
-3. 残差连接: `x' = x + Attention(Qx, Kx, Vx)`
+1. AttentionAdapter 模块（self-attention + MLP，残差连接，mlp_ratio=0.25）
+2. 插在 ViT transformer 输出后、ln_post/proj 前
+3. 与 prompt_learner 一起优化（~0.6M 参数）
 
-**实验设计**:
+**实验结果** (2026-05-27, epoch 15, MVTec AD):
 
-| 实验 | 前置条件 | adapter 层数 | 预期 |
-|------|------|:---:|------|
-| C1 | Phase 1 最优方案 | 6-12层 | +1~3 |
-| C2 | Phase 1+2 最优方案 | 6-12层 | +1~3 |
+| 指标 | Baseline | Phase 3 | Delta |
+|------|:--------:|:-------:|:-----:|
+| pixel_auroc | 94.1 | 94.1 | 0 |
+| pixel_aupro | 84.0 | 83.9 | -0.1 |
+| image_auroc | 90.4 | 89.6 | -0.8 |
+| image_ap | 94.8 | 94.5 | -0.3 |
+
+**结论**: 无效。自注意力重加权未能增强异常特征，反而略微损害全局判别能力。
 
 ### Phase 4: 组合最优方案
 
