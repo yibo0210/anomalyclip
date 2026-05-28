@@ -508,28 +508,102 @@ RTX 3060 Laptop 6GB 的显存分配：
 
 ---
 
-## 八、总结与建议
+## 八、新发现的方法（2026-05-28 更新）
 
-### 最可行的三个方向（适合发论文 + RTX 3060）
+> 以下方法基于 Phase 1-3 实验失败后的深入调研，侧重于**不依赖 ViT 梯度**的推理策略。
 
-| 排名 | 方向 | 来源论文 | 显存友好 | 创新性 | 可行性 |
-|:---:|------|---------|:------:|:------:|:------:|
-| 1 | **Adapter/LoRA 微调视觉编码器** | CLIP-Adapter, LoRA, Prompt-aligned Adapter | ★★★★★ | ★★★★ | ★★★★★ |
-| 2 | **边界感知异常图精炼** | Boundary Loss, CRF | ★★★★★ | ★★★ | ★★★★★ |
-| 3 | **对比学习增强提示词** | SupCon, CLIP 原始目标 | ★★★★★ | ★★★★ | ★★★★ |
+### 8.1 Test-Time Augmentation (TTA)
 
-### 组合建议
+**核心思路**: 在推理时对同一图像使用多种变换（翻转、旋转、多分辨率等），分别推理后融合结果，提升预测的鲁棒性。
 
-**最佳组合：方向 A + 方向 B**
-- Adapter 微调视觉端 + 边界损失优化异常图
-- 两者互补：Adapter 改善特征质量，Boundary Loss 改善边界精度
-- 总新增参数 <1MB，显存开销可忽略
-- 可以做完整的消融实验：单独 Adapter、单独 Boundary Loss、两者结合
+**在异常检测中的应用**:
+- 多分辨率 TTA：在 224/280/336 等多个分辨率下推理，融合 anomaly map
+- 几何 TTA：水平翻转、旋转 0/90/180/270 度后取平均
+- 已验证：Phase 2 单一分辨率 336px 即可提升 AUPRO +1.5
+
+**优势**: 零参数、零训练、实现简单
+
+**参考**: 目标检测/分割中 TTA 是标准做法（如 EfficientDet 测试时多尺度融合）
+
+### 8.2 Multi-Scale Feature Fusion（层间融合）
+
+**现有问题**: AnomalyCLIP 当前对多层 anomaly map 做简单求和 (`anomaly_map.sum(dim=0)`)，未考虑不同层对不同缺陷类型的贡献差异。
+
+**改进思路**:
+- **BiFPN 式加权融合** (Tan et al., CVPR 2020): 可学习的层间权重，自顶向下 + 自底向上双向信息流
+- **Cross-Scale Attention**: 深层特征作为 query，浅层特征作为 key/value，在 patch 级别做跨层注意力
+- **空间自适应权重**: 不同空间位置使用不同的层间权重组合
+
+**与已尝试方法的区别**:
+- FeatureFusionModule 用全局池化 → 丢失空间信息 ❌
+- 新方法保留 patch 级空间维度 → 精细融合 ✅
+
+### 8.3 Feature Statistics Adaptation（测试时特征统计自适应）
+
+**核心思路**: 对每张测试图像，用其自身 patch 特征的统计分布识别异常 patch。
+
+**原理**:
+1. 提取各层 patch 特征 F ∈ R^{N×D}
+2. 计算层内统计量: μ = mean(F), σ = std(F)
+3. 异常分数 = ||F_i - μ|| / σ（马氏距离）
+4. 异常 patch 在特征空间中是离群点
+
+**优势**: 零训练、零额外参数、利用图像自身的分布信息
+
+**来源**: PatchCore (Roth et al., CVPR 2022) 的特征分布建模思路
+
+### 8.4 DINOv2 混合骨干网络
+
+**核心思路**: 用 DINOv2-ViT-B/14 作为辅助特征提取器，与 CLIP ViT-B/16 并行使用。
+
+**为什么 DINOv2 适合异常检测**:
+- 自监督训练保留局部结构信息（patch correspondence）
+- 16×16 patch 网格比 CLIP 的 14×14 更细
+- Dinomaly (2024) 证明 DINOv2 特征在无监督异常检测中 SOTA
+
+**实现**: CLIP 提供语义相似度 anomaly map，DINOv2 提供 PatchCore 式距离 anomaly map，两者融合。
+
+**显存**: 两个 ViT-B 模型 ~5.5GB，batch_size=4，RTX 3060 可运行。
+
+---
+
+## 九、总结与建议
+
+### 已排除的方向（Phase 1-3 验证）
+
+| 方向 | 方法 | 结果 | 原因 |
+|------|------|:---:|------|
+| 多尺度聚合 | AvgPool on similarity map | 无效 | 模糊边界 |
+| 分辨率提升 | 224→336 | AUPRO +1.5 | 部分有效 |
+| Attention Adapter | Self-attn + MLP | 无效 | frozen ViT 输入无梯度 |
+| Bottleneck Adapter | FFN 后 MLP | 无效 | 同上 |
+| LoRA | QKV 旁路 | 无效 | 同上 |
+
+### 当前最优方向（2026-05-28）
+
+| 排名 | 方向 | 来源 | 显存友好 | 创新性 | 可行性 | 预期 AUPRO |
+|:---:|------|------|:------:|:------:|:------:|:---------:|
+| 1 | **Multi-Resolution TTA** | TTA 标准做法 | ★★★★★ | ★★★ | ★★★★★ | +2~4 |
+| 2 | **Cross-Scale Attention** | BiFPN/FPN | ★★★★★ | ★★★★ | ★★★★ | +2~4 |
+| 3 | **Feature Statistics** | PatchCore | ★★★★★ | ★★★ | ★★★★ | +1~3 |
+| 4 | **DINOv2 混合骨干** | Dinomaly | ★★★★ | ★★★★★ | ★★★ | +4~8 |
+
+### 推荐实验路线
+
+```
+Phase 4: Multi-Resolution TTA (最简单，0.5天)
+    ↓ 有效
+Phase 5: Cross-Scale Attention (中等难度，1天)
+    ↓ 有效
+Phase 6: Feature Statistics (零训练，0.5天)
+    ↓ 组合
+Phase 7: 最优方案组合 → 论文核心实验
+```
 
 ### 需要注意的问题
 
-1. **论文创新性**：Adapter/LoRA 已在分类任务中被广泛研究，需要在异常检测场景下找到新的切入点（如：视觉端 vs 文本端的联合优化策略、Adapter 位置的选择等）
-2. **实验充分性**：需要在 MVTec AD、VisA、BTAD、MPDD 等多个数据集上验证，包含零样本跨域迁移实验
+1. **论文创新性**：纯推理策略（TTA、统计）创新性有限，需与 prompt learning 结合形成完整方法
+2. **实验充分性**：需要在 MVTec AD、VisA、BTAD、MPDD 等多个数据集上验证
 3. **消融实验**：每个改进组件都需要单独验证贡献
 
 ---
@@ -552,3 +626,7 @@ RTX 3060 Laptop 6GB 的显存分配：
 14. Li et al. "TinyCLIP: CLIP Distillation via Affinity Mimicking and Weight Inheritance." ICCV 2024.
 15. Apple/CMU. "MobileCLIP: Fast Image-Text Models through Multi-Modal Reinforced Training." 2024.
 16. Radford et al. "Learning Transferable Visual Models From Natural Language Supervision." ICML 2021. (CLIP)
+17. Fang et al. "AF-CLIP: Zero-Shot Anomaly Detection via Anomaly-Focused CLIP Adaptation." ACM MM 2025.
+18. Ma et al. "AA-CLIP: Enhancing Zero-shot Anomaly Detection via Anomaly-Aware CLIP." CVPR 2025.
+19. Dinomaly: The Power of DINOv2 Features in Unsupervised Visual Anomaly Detection. 2024.
+20. Lin et al. "Feature Pyramid Networks for Object Detection." CVPR 2017. (FPN)
